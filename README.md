@@ -22,4 +22,5 @@ echo "1" | go run main.go s3://<bucket>/1.txt
 ```sh
 GOOS=linux GOARCH=arm64 go build -o dist/arm64/tinyups3 .
 du -sh dist/arm64/tinyups3 
+cp dist/arm64/tinyups3 ~/envirobly/envirobly/public/foundation/usr/local/bin/tinyups3
 ```
