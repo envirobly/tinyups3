@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -69,7 +68,13 @@ func main() {
 		log.Fatalf("Error loading AWS config: %v", err)
 	}
 
-	client := s3.NewFromConfig(cfg)
+	// Enable dualstack endpoint
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = false
+		o.EndpointResolver = s3.EndpointResolverFromURL(
+			fmt.Sprintf("https://s3.dualstack.%s.amazonaws.com", cfg.Region),
+		)
+	})
 
 	// Start multipart upload
 	createOutput, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
@@ -98,11 +103,12 @@ func main() {
 			break
 		}
 
+		pn := partNumber // local variable to take address of
 		partInput := &s3.UploadPartInput{
 			Bucket:     &bucket,
 			Key:        &key,
 			UploadId:   uploadID,
-			PartNumber: partNumber,
+			PartNumber: &pn,
 			Body:       bytes.NewReader(buffer[:n]),
 		}
 
@@ -114,7 +120,7 @@ func main() {
 
 		parts = append(parts, types.CompletedPart{
 			ETag:       uploadOutput.ETag,
-			PartNumber: partNumber,
+			PartNumber: &pn,
 		})
 		log.Printf("Uploaded part %d (%d bytes)", partNumber, n)
 
