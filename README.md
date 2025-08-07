@@ -13,6 +13,8 @@ go fmt ./...
 ```sh
 # Install dependencies
 go mod tidy
+
+echo "1" | go run main.go s3://<bucket>/1.txt
 ```
 
 ## Building distribution for Linux arm64
