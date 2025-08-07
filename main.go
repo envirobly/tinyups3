@@ -122,7 +122,7 @@ func main() {
 			ETag:       uploadOutput.ETag,
 			PartNumber: &pn,
 		})
-		log.Printf("Uploaded part %d (%d bytes)", partNumber, n)
+		// log.Printf("Uploaded part %d (%d bytes)", partNumber, n)
 
 		partNumber++
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
