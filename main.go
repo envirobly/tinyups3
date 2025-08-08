@@ -12,6 +12,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -34,32 +35,65 @@ func parseS3URI(s3uri string) (bucket, key string, err error) {
 	return bucket, key, nil
 }
 
+// estimateAllocatableMemory uses syscall.Sysinfo to get available memory on Linux.
+// Returns memory in MB or an error if insufficient.
+func estimateAllocatableMemory(requiredMB int) (int, error) {
+	var info syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&info); err != nil {
+		return 0, fmt.Errorf("failed to get system memory info: %v", err)
+	}
+
+	// Calculate available memory (free + buffers) in MB
+	availableBytes := info.Freeram + info.Bufferram
+	availableMB := int(availableBytes / (1024 * 1024))
+
+	if availableMB < requiredMB {
+		return availableMB, fmt.Errorf("insufficient memory. Available: %d MB, Required: %d MB", availableMB, requiredMB)
+	}
+	return availableMB, nil
+}
+
 func main() {
-	// Define flags with input size
-	partSizeMB := flag.Int("partSize", 5, "Part size in MB for multipart upload (min 5MB)")
+	// Define flags
 	inputSize := flag.Int64("inputSize", 0, "Exact input size in bytes (required)")
+	requiredMemory := flag.Int("requiredMemory", 128, "Minimum required memory in MB")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--partSize=MB] [--inputSize=bytes] s3://bucket/key\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--inputSize=bytes] [--requiredMemory=MB] s3://bucket/key\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-
-	// Validate part size
-	if *partSizeMB < 5 {
-		log.Fatalf("partSize must be at least 5MB")
-	}
-	partSize := *partSizeMB * 1024 * 1024
 
 	// Validate input size
 	if *inputSize <= 0 {
 		log.Fatalf("inputSize must be a positive integer")
 	}
 
-	// Validate args
-	if flag.NArg() != 1 {
-		flag.Usage()
-		os.Exit(1)
+	// Validate required memory
+	if *requiredMemory <= 0 {
+		log.Fatalf("requiredMemory must be a positive integer")
 	}
+
+	// Estimate allocatable memory
+	availableMB, err := estimateAllocatableMemory(*requiredMemory)
+	if err != nil {
+		log.Fatalf("Error: %v", err)
+	}
+
+	// Calculate partSize
+	const minPartSizeMB = 5
+	const maxPartSizeMB = 5120 // S3 max part size (5GB)
+	partSizeMB := minPartSizeMB
+	if availableMB > *requiredMemory {
+		excessMB := availableMB - *requiredMemory
+		partSizeMB += excessMB / 2 // +1MB per 2MB excess
+	}
+	if partSizeMB > maxPartSizeMB {
+		partSizeMB = maxPartSizeMB
+	}
+	partSize := partSizeMB * 1024 * 1024
+
+	// Log partSize for debugging
+	log.Printf("Using partSize: %d MB (based on %d MB available memory, %d MB required)", partSizeMB, availableMB, *requiredMemory)
 
 	s3uri := flag.Arg(0)
 	bucket, key, err := parseS3URI(s3uri)
@@ -83,9 +117,9 @@ func main() {
 	})
 
 	// Calculate exact number of parts
-	estParts := int(*inputSize/int64(partSize)) + 1
-	if *inputSize%int64(partSize) == 0 {
-		estParts--
+	estParts := int(*inputSize / int64(partSize))
+	if *inputSize%int64(partSize) != 0 {
+		estParts++
 	}
 
 	// Start multipart upload
