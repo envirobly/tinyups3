@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -11,6 +10,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -35,10 +35,11 @@ func parseS3URI(s3uri string) (bucket, key string, err error) {
 }
 
 func main() {
-	// Define flags
-	partSizeMB := flag.Int("partSize", 64, "Part size in MB for multipart upload (min 5MB)")
+	// Define flags with input size
+	partSizeMB := flag.Int("partSize", 5, "Part size in MB for multipart upload (min 5MB)")
+	inputSize := flag.Int64("inputSize", 0, "Exact input size in bytes (required)")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--partSize=MB] s3://bucket/key\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--partSize=MB] [--inputSize=bytes] s3://bucket/key\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -48,6 +49,11 @@ func main() {
 		log.Fatalf("partSize must be at least 5MB")
 	}
 	partSize := *partSizeMB * 1024 * 1024
+
+	// Validate input size
+	if *inputSize <= 0 {
+		log.Fatalf("inputSize must be a positive integer")
+	}
 
 	// Validate args
 	if flag.NArg() != 1 {
@@ -68,13 +74,19 @@ func main() {
 		log.Fatalf("Error loading AWS config: %v", err)
 	}
 
-	// Enable dualstack endpoint
+	// Configure client with dualstack endpoint
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = false
 		o.EndpointResolver = s3.EndpointResolverFromURL(
 			fmt.Sprintf("https://s3.dualstack.%s.amazonaws.com", cfg.Region),
 		)
 	})
+
+	// Calculate exact number of parts
+	estParts := int(*inputSize/int64(partSize)) + 1
+	if *inputSize%int64(partSize) == 0 {
+		estParts--
+	}
 
 	// Start multipart upload
 	createOutput, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
@@ -86,14 +98,13 @@ func main() {
 	}
 
 	uploadID := createOutput.UploadId
-	var parts []types.CompletedPart
-	reader := bufio.NewReaderSize(os.Stdin, partSize)
+	parts := make([]types.CompletedPart, 0, estParts) // Preallocate slice
+	buffer := make([]byte, partSize)                 // Single buffer allocation
 
 	partNumber := int32(1)
-	buffer := make([]byte, partSize)
-
 	for {
-		n, err := io.ReadFull(reader, buffer)
+		// Read directly from os.Stdin to avoid bufio.Reader overhead
+		n, err := io.ReadAtLeast(os.Stdin, buffer, partSize)
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 			abortMultipart(ctx, client, bucket, key, uploadID)
 			log.Fatalf("Failed to read input: %v", err)
@@ -103,7 +114,7 @@ func main() {
 			break
 		}
 
-		pn := partNumber // local variable to take address of
+		pn := partNumber // Local variable for address
 		partInput := &s3.UploadPartInput{
 			Bucket:     &bucket,
 			Key:        &key,
@@ -122,7 +133,6 @@ func main() {
 			ETag:       uploadOutput.ETag,
 			PartNumber: &pn,
 		})
-		// log.Printf("Uploaded part %d (%d bytes)", partNumber, n)
 
 		partNumber++
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -142,6 +152,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to complete multipart upload: %v", err)
 	}
+
+	// Clean up memory
+	buffer = nil
+	parts = nil
+	runtime.GC() // Optional: trigger GC for constrained systems
 
 	log.Println("Upload completed successfully.")
 }
