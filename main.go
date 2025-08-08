@@ -35,7 +35,7 @@ func parseS3URI(s3uri string) (bucket, key string, err error) {
 	return bucket, key, nil
 }
 
-// estimateAllocatableMemory uses syscall.Sysinfo to get available memory on Linux.
+// estimateAllocatableMemory estimates available memory similar to `free -m` on Linux.
 // Returns memory in MB or an error if insufficient.
 func estimateAllocatableMemory(requiredMB int) (int, error) {
 	var info syscall.Sysinfo_t
@@ -43,9 +43,18 @@ func estimateAllocatableMemory(requiredMB int) (int, error) {
 		return 0, fmt.Errorf("failed to get system memory info: %v", err)
 	}
 
-	// Calculate available memory (free + buffers) in MB
-	availableBytes := info.Freeram + info.Bufferram
+	// Calculate available memory in bytes, mimicking `free -m` Available
+	// Include Freeram (MemFree), Bufferram (Buffers), and Sharedram (includes Cached)
+	// Adjust for reclaimable memory conservatively (similar to `free`'s logic)
+	availableBytes := info.Freeram + info.Bufferram + info.Sharedram
+
+	// Convert to MB (1 MB = 1024 * 1024 bytes)
 	availableMB := int(availableBytes / (1024 * 1024))
+
+	// Conservative adjustment: reduce Sharedram contribution by 50% to account for
+	// non-reclaimable portions (similar to `free`'s MemAvailable calculation)
+	sharedMB := int(info.Sharedram / (1024 * 1024))
+	availableMB -= sharedMB / 2
 
 	if availableMB < requiredMB {
 		return availableMB, fmt.Errorf("insufficient memory. Available: %d MB, Required: %d MB", availableMB, requiredMB)
