@@ -83,9 +83,9 @@ func main() {
 	})
 
 	// Calculate exact number of parts
-	estParts := int(*inputSize/int64(partSize)) + 1
+	partsCount := int(*inputSize/int64(partSize)) + 1
 	if *inputSize%int64(partSize) == 0 {
-		estParts--
+		partsCount--
 	}
 
 	// Start multipart upload
@@ -98,7 +98,7 @@ func main() {
 	}
 
 	uploadID := createOutput.UploadId
-	parts := make([]types.CompletedPart, 0, estParts) // Preallocate slice
+	parts := make([]types.CompletedPart, 0, partsCount) // Preallocate slice
 	buffer := make([]byte, partSize)                 // Single buffer allocation
 
 	partNumber := int32(1)
