@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -34,47 +34,97 @@ func parseS3URI(s3uri string) (bucket, key string, err error) {
 	return bucket, key, nil
 }
 
+type partUpload struct {
+	partNumber int32
+	data       []byte
+	size       int
+}
+
+type uploadResult struct {
+	part types.CompletedPart
+	err  error
+}
+
+// Zero-allocation bytes reader that implements io.ReadSeeker
+type bytesReader struct {
+	data []byte
+	pos  int64
+}
+
+func newBytesReader(data []byte) *bytesReader {
+	return &bytesReader{data: data, pos: 0}
+}
+
+func (r *bytesReader) Read(p []byte) (int, error) {
+	if r.pos >= int64(len(r.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += int64(n)
+	return n, nil
+}
+
+func (r *bytesReader) Seek(offset int64, whence int) (int64, error) {
+	var newPos int64
+	switch whence {
+	case io.SeekStart:
+		newPos = offset
+	case io.SeekCurrent:
+		newPos = r.pos + offset
+	case io.SeekEnd:
+		newPos = int64(len(r.data)) + offset
+	default:
+		return 0, errors.New("invalid whence")
+	}
+	
+	if newPos < 0 {
+		return 0, errors.New("negative position")
+	}
+	
+	r.pos = newPos
+	return newPos, nil
+}
+
 func main() {
-	// Define flags with input size
+	// Parse command line flags
 	partSizeMB := flag.Int("partSize", 5, "Part size in MB for multipart upload (min 5MB)")
 	inputSize := flag.Int64("inputSize", 0, "Exact input size in bytes (required)")
+	concurrency := flag.Int("concurrency", 1, "Number of concurrent part uploads")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--partSize=MB] [--inputSize=bytes] s3://bucket/key\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--partSize=MB] [--inputSize=bytes] [--concurrency=N] s3://bucket/key\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
-	// Validate part size
+	// Validate arguments
 	if *partSizeMB < 5 {
 		log.Fatalf("partSize must be at least 5MB")
 	}
-	partSize := *partSizeMB * 1024 * 1024
-
-	// Validate input size
 	if *inputSize <= 0 {
 		log.Fatalf("inputSize must be a positive integer")
 	}
-
-	// Validate args
 	if flag.NArg() != 1 {
 		flag.Usage()
 		os.Exit(1)
 	}
+	if *concurrency < 1 {
+		*concurrency = 1
+	}
 
+	// Parse S3 URI
 	s3uri := flag.Arg(0)
 	bucket, key, err := parseS3URI(s3uri)
 	if err != nil {
 		log.Fatalf("Error parsing S3 URI: %v", err)
 	}
 
+	// Initialize AWS client
 	ctx := context.Background()
-
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		log.Fatalf("Error loading AWS config: %v", err)
 	}
 
-	// Configure client with dualstack endpoint
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = false
 		o.EndpointResolver = s3.EndpointResolverFromURL(
@@ -82,11 +132,16 @@ func main() {
 		)
 	})
 
-	// Calculate exact number of parts
-	partsCount := int(*inputSize/int64(partSize)) + 1
-	if *inputSize%int64(partSize) == 0 {
-		partsCount--
+	partSize := *partSizeMB * 1024 * 1024
+
+	// Calculate exact number of parts needed
+	partsCount := int(*inputSize / int64(partSize))
+	if *inputSize%int64(partSize) != 0 {
+		partsCount++
 	}
+
+	log.Printf("Starting upload: %d parts, %d MB each, %d concurrent workers", 
+		partsCount, *partSizeMB, *concurrency)
 
 	// Start multipart upload
 	createOutput, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
@@ -96,68 +151,184 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initiate multipart upload: %v", err)
 	}
-
 	uploadID := createOutput.UploadId
-	parts := make([]types.CompletedPart, 0, partsCount) // Preallocate slice
-	buffer := make([]byte, partSize)                 // Single buffer allocation
 
-	partNumber := int32(1)
-	for {
-		// Read directly from os.Stdin to avoid bufio.Reader overhead
-		n, err := io.ReadAtLeast(os.Stdin, buffer, partSize)
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			abortMultipart(ctx, client, bucket, key, uploadID)
-			log.Fatalf("Failed to read input: %v", err)
+	// Memory-efficient buffer pool - only allocate what we need
+	bufferPool := &sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, partSize)
+			return &buf
+		},
+	}
+
+	// Channels for coordination
+	partsChan := make(chan partUpload, *concurrency)
+	resultsChan := make(chan uploadResult, *concurrency)
+	
+	// Context for cancellation
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Start worker goroutines
+	var workerWG sync.WaitGroup
+	for i := 0; i < *concurrency; i++ {
+		workerWG.Add(1)
+		go func(workerID int) {
+			defer workerWG.Done()
+			
+			for part := range partsChan {
+				// Create reader from the part data
+				reader := newBytesReader(part.data[:part.size])
+				
+				// Upload the part
+				uploadInput := &s3.UploadPartInput{
+					Bucket:     &bucket,
+					Key:        &key,
+					UploadId:   uploadID,
+					PartNumber: &part.partNumber,
+					Body:       reader,
+				}
+				
+				result := uploadResult{}
+				uploadOutput, err := client.UploadPart(ctx, uploadInput)
+				
+				// Return buffer to pool immediately after upload
+				bufferPool.Put(&part.data)
+				
+				if err != nil {
+					result.err = err
+				} else {
+					result.part = types.CompletedPart{
+						ETag:       uploadOutput.ETag,
+						PartNumber: &part.partNumber,
+					}
+				}
+				
+				// Send result back
+				select {
+				case resultsChan <- result:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Start result collector goroutine
+	completedParts := make([]types.CompletedPart, partsCount)
+	var collectorWG sync.WaitGroup
+	var uploadError error
+	
+	collectorWG.Add(1)
+	go func() {
+		defer collectorWG.Done()
+		
+		for i := 0; i < partsCount; i++ {
+			select {
+			case result := <-resultsChan:
+				if result.err != nil {
+					uploadError = result.err
+					cancel() // Cancel all workers
+					return
+				}
+				// Store completed part in correct position
+				idx := int(*result.part.PartNumber) - 1
+				if idx >= 0 && idx < len(completedParts) {
+					completedParts[idx] = result.part
+				}
+			case <-ctx.Done():
+				return
+			}
 		}
+	}()
 
-		if n == 0 {
+	// Read data from stdin and dispatch to workers
+	var partNumber int32 = 1
+	var readError error
+	
+	for partNumber <= int32(partsCount) {
+		// Get buffer from pool
+		bufPtr := bufferPool.Get().(*[]byte)
+		buf := *bufPtr
+		
+		// Calculate how much to read for this part
+		remainingBytes := *inputSize - int64(partNumber-1)*int64(partSize)
+		readSize := int64(partSize)
+		if remainingBytes < readSize {
+			readSize = remainingBytes
+		}
+		
+		// Read data from stdin
+		n, err := io.ReadFull(os.Stdin, buf[:readSize])
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			bufferPool.Put(bufPtr) // Return buffer on error
+			readError = fmt.Errorf("failed to read part %d: %w", partNumber, err)
 			break
 		}
-
-		pn := partNumber // Local variable for address
-		partInput := &s3.UploadPartInput{
-			Bucket:     &bucket,
-			Key:        &key,
-			UploadId:   uploadID,
-			PartNumber: &pn,
-			Body:       bytes.NewReader(buffer[:n]),
+		
+		if n == 0 {
+			bufferPool.Put(bufPtr) // Return buffer if no data read
+			break
 		}
-
-		uploadOutput, err := client.UploadPart(ctx, partInput)
-		if err != nil {
-			abortMultipart(ctx, client, bucket, key, uploadID)
-			log.Fatalf("Failed to upload part %d: %v", partNumber, err)
+		
+		// Create upload task
+		task := partUpload{
+			partNumber: partNumber,
+			data:       buf,
+			size:       n,
 		}
-
-		parts = append(parts, types.CompletedPart{
-			ETag:       uploadOutput.ETag,
-			PartNumber: &pn,
-		})
-
+		
+		// Send to workers (this will block if all workers are busy)
+		select {
+		case partsChan <- task:
+			// Task dispatched successfully
+		case <-ctx.Done():
+			bufferPool.Put(bufPtr)
+			break
+		}
+		
 		partNumber++
+		
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			break
 		}
 	}
-
-	// Complete multipart upload
+	
+	// Close parts channel and wait for workers to finish
+	close(partsChan)
+	workerWG.Wait()
+	
+	// Wait for result collector to finish
+	collectorWG.Wait()
+	
+	// Check for errors
+	if readError != nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		log.Fatalf("Read error: %v", readError)
+	}
+	
+	if uploadError != nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
+		log.Fatalf("Upload error: %v", uploadError)
+	}
+	
+	// Complete the multipart upload
 	_, err = client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
 		Bucket:   &bucket,
 		Key:      &key,
 		UploadId: uploadID,
 		MultipartUpload: &types.CompletedMultipartUpload{
-			Parts: parts,
+			Parts: completedParts,
 		},
 	})
 	if err != nil {
+		abortMultipart(ctx, client, bucket, key, uploadID)
 		log.Fatalf("Failed to complete multipart upload: %v", err)
 	}
-
-	// Clean up memory
-	buffer = nil
-	parts = nil
-	runtime.GC() // Optional: trigger GC for constrained systems
-
+	
+	// Force garbage collection to free any remaining memory
+	runtime.GC()
+	
 	log.Println("Upload completed successfully.")
 }
 
