@@ -16,8 +16,9 @@ import (
 
 func main() {
 	var (
-		concurrency = flag.Int("concurrency", 1, "Number of concurrent uploads")
-		partSizeMB  = flag.Int("part-size", 5, "Part size in MB for multipart upload")
+		concurrency   = flag.Int("concurrency", 1, "Number of concurrent uploads")
+		partSizeMB    = flag.Int("part-size", 5, "Part size in MB for multipart upload")
+		contentLength = flag.Int64("content-length", -1, "Content length in bytes (required)")
 	)
 	flag.Parse()
 
@@ -27,6 +28,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] s3://bucket/path/to/file\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
+	// Require content length
+	if *contentLength < 0 {
+		fmt.Fprintf(os.Stderr, "Error: --content-length is required\n")
+		fmt.Fprintf(os.Stderr, "Example: cat file.txt | %s --content-length=$(wc -c < file.txt) s3://bucket/key\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -54,13 +62,16 @@ func main() {
 	})
 
 	// Upload from stdin
-	fmt.Fprintf(os.Stderr, "Uploading stdin to %s with concurrency=%d, part-size=%dMB\n", 
-		s3URI, *concurrency, *partSizeMB)
+	fmt.Fprintf(os.Stderr, "Uploading stdin to %s (size: %d bytes) with concurrency=%d, part-size=%dMB\n", 
+		s3URI, *contentLength, *concurrency, *partSizeMB)
+
+	stdinWrapper := manager.ReadSeekCloser(os.Stdin)
 
 	result, err := uploader.Upload(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-		Body:   os.Stdin,
+		Bucket:        aws.String(bucket),
+		Key:           aws.String(key),
+		Body:          stdinWrapper,
+		ContentLength: aws.Int64(*contentLength),
 	})
 	if err != nil {
 		log.Fatalf("Upload failed: %v", err)
