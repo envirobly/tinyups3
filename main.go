@@ -158,7 +158,7 @@ func main() {
 	parts = nil
 	runtime.GC() // Optional: trigger GC for constrained systems
 
-	log.Println("Upload completed successfully.")
+	// log.Println("Upload completed successfully.")
 }
 
 func abortMultipart(ctx context.Context, client *s3.Client, bucket, key string, uploadID *string) {
