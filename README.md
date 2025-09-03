@@ -20,7 +20,6 @@ cat largefile | tinyups3 --inputSize $(stat -c%s largefile) s3://...
 
 ```sh
 GOOS=linux GOARCH=arm64 go build -o dist/arm64/tinyups3 .
-du -sh dist/arm64/tinyups3 
 ```
 
 ## Development
