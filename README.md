@@ -39,6 +39,6 @@ go fmt ./...
 # Install dependencies
 go mod tidy
 
-echo "1" | go run main.go s3://<bucket>/1.txt
+go run main.go ...
 ```
 
