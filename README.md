@@ -1,5 +1,9 @@
 # tinyups3
 
+Streaming S3 uploader optimized for minimum CPU and RAM usage. Ideal for constrained systems.
+
+<img width="1080" height="1080" alt="tinyups3-logo" src="https://github.com/user-attachments/assets/8765e5ae-a1e3-47bd-9ef0-aa9f03417869" />
+
 ## Usage
 
 ```sh
