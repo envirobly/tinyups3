@@ -10,7 +10,7 @@ Download the relevant binary for your platform from the Releases section and mak
 
 ```sh
 sudo curl -fSsL -o /usr/local/bin/tinyups3 https://github.com/envirobly/tinyups3/releases/download/v1.0.2/tinyups3_linux_arm64
-chmod +x /usr/local/bin/tinyups3
+sudo chmod +x /usr/local/bin/tinyups3
 tinyups3 --help
 ```
 
