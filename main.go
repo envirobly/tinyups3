@@ -107,7 +107,7 @@ func main() {
 
 	uploadID := createOutput.UploadId
 	parts := make([]types.CompletedPart, 0, partsCount) // Preallocate slice
-	buffer := make([]byte, partSize)                 // Single buffer allocation
+	buffer := make([]byte, partSize)                    // Single buffer allocation
 
 	partNumber := int32(1)
 	for {
