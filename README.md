@@ -30,6 +30,8 @@ tinyups3 [--partSize=MB] [--inputSize=bytes] s3://bucket/key
 cat largefile | tinyups3 --inputSize $(stat -c%s largefile) s3://... 
 ```
 
+Note: On MacOS use `gstat` instead of the outdated `stat`.
+
 ## Building from source
 
 ```sh
@@ -37,6 +39,12 @@ GOOS=linux GOARCH=arm64 go build -o dist/arm64/tinyups3 .
 ```
 
 ## Development
+
+### Running tests
+
+```sh
+go test ./...
+```
 
 ### Formatting
 
@@ -53,5 +61,12 @@ go fmt ./...
 go mod tidy
 
 go run main.go ...
+```
+
+### Upgrading dependencies
+
+```sh
+go get -u ./...
+go mod tidy 
 ```
 

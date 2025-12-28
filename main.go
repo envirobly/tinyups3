@@ -34,6 +34,17 @@ func parseS3URI(s3uri string) (bucket, key string, err error) {
 	return bucket, key, nil
 }
 
+func calculatePartsCount(inputSize int64, partSize int) int {
+	if inputSize <= 0 || partSize <= 0 {
+		return 0
+	}
+	partsCount := int(inputSize/int64(partSize)) + 1
+	if inputSize%int64(partSize) == 0 {
+		partsCount--
+	}
+	return partsCount
+}
+
 func main() {
 	// Define flags with input size
 	partSizeMB := flag.Int("partSize", 5, "Part size in MB for multipart upload (min 5MB)")
@@ -83,10 +94,7 @@ func main() {
 	})
 
 	// Calculate exact number of parts
-	partsCount := int(*inputSize/int64(partSize)) + 1
-	if *inputSize%int64(partSize) == 0 {
-		partsCount--
-	}
+	partsCount := calculatePartsCount(*inputSize, partSize)
 
 	// Start multipart upload
 	createOutput, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
@@ -99,7 +107,7 @@ func main() {
 
 	uploadID := createOutput.UploadId
 	parts := make([]types.CompletedPart, 0, partsCount) // Preallocate slice
-	buffer := make([]byte, partSize)                 // Single buffer allocation
+	buffer := make([]byte, partSize)                    // Single buffer allocation
 
 	partNumber := int32(1)
 	for {
