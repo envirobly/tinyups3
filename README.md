@@ -38,6 +38,12 @@ GOOS=linux GOARCH=arm64 go build -o dist/arm64/tinyups3 .
 
 ## Development
 
+### Running tests
+
+```sh
+go test ./...
+```
+
 ### Formatting
 
 Apply Go formatting:
