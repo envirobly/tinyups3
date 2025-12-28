@@ -30,6 +30,8 @@ tinyups3 [--partSize=MB] [--inputSize=bytes] s3://bucket/key
 cat largefile | tinyups3 --inputSize $(stat -c%s largefile) s3://... 
 ```
 
+Note: On MacOS use `gstat` instead of the outdated `stat`.
+
 ## Building from source
 
 ```sh

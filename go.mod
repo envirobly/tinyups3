@@ -1,6 +1,6 @@
 module github.com/envirobly/tinyups3
 
-go 1.24.5
+go 1.25.5
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.6
