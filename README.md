@@ -55,3 +55,10 @@ go mod tidy
 go run main.go ...
 ```
 
+### Upgrading dependencies
+
+```sh
+go get -u ./...
+go mod tidy 
+```
+
