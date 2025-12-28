@@ -9,7 +9,7 @@ Streaming S3 uploader optimized for minimum CPU and RAM usage. Ideal for constra
 Download the relevant binary for your platform from the Releases section and make it executable. For example:
 
 ```sh
-sudo curl -fSsL -o /usr/local/bin/tinyups3 https://github.com/envirobly/tinyups3/releases/download/v1.0.2/tinyups3_linux_arm64
+sudo curl -fSsL -o /usr/local/bin/tinyups3 https://github.com/envirobly/tinyups3/releases/download/v1.0.3/tinyups3_linux_arm64
 sudo chmod +x /usr/local/bin/tinyups3
 tinyups3 --help
 ```
